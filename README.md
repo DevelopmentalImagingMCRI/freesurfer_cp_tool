@@ -21,16 +21,16 @@ apt install python-skimage python-numpy python-scipy python-nibabel
 
 After creating the Freesurfer directories for a subject *foo*, use the following sequence:
 
-1. recon-all -autorecon1 -autorecon2 -s foo
-1. cptool_1_ribbon_defect foo
-1. cptool_2_cps foo
-1. recon-all -normalization2 -segmentation -s foo
-1. cptool_3_wm foo
-1. recon-all -autorecon2-wm -autorecon3 -s foo
+1. `recon-all -autorecon1 -autorecon2 -s foo`
+1. `cptool_1_ribbon_defect foo`
+1. `cptool_2_cps foo`
+1. `recon-all -normalization2 -segmentation -s foo`
+1. `cptool_3_wm foo`
+1. `recon-all -autorecon2-wm -autorecon3 -s foo`
 
 ## CHECKING OUTPUTS
 
-There is a script 'cps_edit6.sh' that will load Freeview with the control points, wm.mgz and white surfaces overlaid onto the T1. To run it type:
+There is a script `cps_edit6.sh` that will load Freeview with the control points, wm.mgz and white surfaces overlaid onto the T1. To run it type:
 
 ```
 cps_edit6.sh foo
