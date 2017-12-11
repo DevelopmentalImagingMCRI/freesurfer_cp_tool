@@ -1,0 +1,268 @@
+#!/usr/bin/env python
+
+import nibabel
+import scipy
+import scipy.ndimage
+import numpy
+
+import pylab
+
+import os
+import sys
+
+import subprocess
+import shutil
+import skimage.morphology
+
+import errno
+
+def radialStrel(R):
+	X, Y, Z = numpy.meshgrid(numpy.arange(-R, R + 1), numpy.arange(-R, R + 1), numpy.arange(-R, R + 1))
+	S = numpy.sqrt(X * X + Y * Y + Z * Z) 
+	return (S <= R)
+
+# writes control point file using a mask, transform, and file name
+def writeControlPoints(fileName, IMG, MGH):
+
+	I = numpy.matrix(numpy.stack(numpy.where(IMG)))
+
+	RASTransform = numpy.matrix(MGH.get_affine())
+
+	T = numpy.round(RASTransform[0:3, 0:3] * I + RASTransform[0:3, 3])
+
+	FID = open(fileName, 'w')
+
+	for z in range(T.shape[1]):
+		FID.write("%d %d %d\n" % (T[0, z], T[1, z], T[2, z]))
+	FID.write("info\n")
+	FID.write("numpoints %d\n" % T.shape[1])
+	FID.write("useRealRAS 1\n")
+
+	FID.close()
+
+def mkdirSafe(D):
+	try:
+		os.makedirs(D)
+	except OSError as exc: # Python >2.5
+		if exc.errno == errno.EEXIST and os.path.isdir(D):
+			pass
+		else:
+			raise Exception
+#@profile
+def main():
+
+	if len(sys.argv) != 2:
+		print "Performs defect-based control point insertion, usage:"
+		print
+		print sys.argv[0] + " <subject id>"
+		quit()
+
+	subjectID = sys.argv[1]
+
+	try:
+		subjDir = os.path.join(os.environ['SUBJECTS_DIR'], subjectID)
+	except Exception:
+		print "SUBJECTS_DIR not set"
+		quit()
+
+	if not os.path.isdir(subjDir):
+		print "Subject directory not found"
+		quit()
+
+
+	subjMRIDir = os.path.join(subjDir, 'mri')
+
+# load in the NIIs
+	T1MGZ = nibabel.load(os.path.join(subjMRIDir, 'T1.mgz'))
+	T1IMG = T1MGZ.get_data()
+	brainmaskMGZ = nibabel.load(os.path.join(subjMRIDir, 'brainmask.mgz'))
+	brainmaskIMG = brainmaskMGZ.get_data()
+	defectsMGZ = nibabel.load(os.path.join(subjMRIDir, 'surface.defects.mgz'))
+	defectsIMG = defectsMGZ.get_data()
+	ribbonMGZ = nibabel.load(os.path.join(subjMRIDir, 'ribbon.mgz'))
+	ribbonIMG = ribbonMGZ.get_data()
+	if not os.path.isfile(os.path.join(subjMRIDir, 'wm.preautoedit.mgz')):
+		shutil.copyfile(os.path.join(subjMRIDir, 'wm.mgz'), os.path.join(subjMRIDir, 'wm.preautoedit.mgz'))
+
+	wmMGZ = nibabel.load(os.path.join(subjMRIDir, 'wm.preautoedit.mgz'))
+	wmIMG = wmMGZ.get_data()
+	ASEGMGZ = nibabel.load(os.path.join(subjMRIDir, 'aseg.presurf.mgz'))
+	ASEGIMG = ASEGMGZ.get_data()
+
+	pixelSize = T1MGZ.get_header().get_zooms()[0]
+
+# erode the brainmask 5mm to remove wm around the edges
+	brainmaskStrel = radialStrel(numpy.ceil(2.0 / pixelSize))
+
+	#brainmask = scipy.ndimage.morphology.binary_closing(brainmaskIMG > 5, structure = numpy.ones((5, 5, 5)))
+	
+	brainmask = scipy.ndimage.morphology.binary_dilation(brainmaskIMG > 5, structure = numpy.ones((5, 1, 1)))
+	brainmask = scipy.ndimage.morphology.binary_dilation(brainmask, structure = numpy.ones((1, 5, 1)))
+	brainmask = scipy.ndimage.morphology.binary_dilation(brainmask, structure = numpy.ones((1, 1, 5)))
+	brainmask = scipy.ndimage.morphology.binary_erosion(brainmask, structure = numpy.ones((5, 1, 1)))
+	brainmask = scipy.ndimage.morphology.binary_erosion(brainmask, structure = numpy.ones((1, 5, 1)))
+	brainmask = scipy.ndimage.morphology.binary_erosion(brainmask, structure = numpy.ones((1, 1, 5)))
+	
+	#print numpy.array_equal(brainmask, brainmask2)
+	brainmaskEroded = scipy.ndimage.morphology.binary_erosion(brainmask, structure = brainmaskStrel)
+
+	ASEGMask = scipy.ndimage.morphology.binary_erosion(ASEGIMG > 0, structure = brainmaskStrel)
+
+	WMDilated = scipy.ndimage.morphology.binary_dilation(numpy.logical_or(ASEGIMG == 2, ASEGIMG == 41), structure = brainmaskStrel)
+
+#cerebellumMask = numpy.isin(ASEGMGZ.get_data(), [8, 47])
+	cerebellumMask = numpy.reshape(numpy.in1d(ASEGIMG, [8, 47]), ASEGMGZ.shape)
+
+# take out hippocampus and amygdala from WM
+	hippocampusAmygdalaMask = numpy.reshape(numpy.in1d(ASEGIMG.flatten(), [17, 18, 53, 54]), ASEGMGZ.shape)
+
+# dilate the cerebellum and CSF by 2mm to remove WM near the edge
+	cerebellumCSFStrel = radialStrel(numpy.ceil(2.0 / pixelSize))
+
+	cerebellumCSFMask = scipy.ndimage.morphology.binary_dilation(cerebellumMask, structure = cerebellumCSFStrel)
+
+	opticChiasmMask = scipy.ndimage.morphology.binary_dilation(ASEGIMG == 85, structure = cerebellumCSFStrel)
+
+# defectIMG contains the defect labels that are inside the eroded brainmask but outside the WM surface
+	defectIMG = numpy.int16(defectsMGZ.get_data())
+
+	inWMSurfs = numpy.logical_or(ribbonIMG == 2, ribbonIMG == 41)
+
+	brainmaskEroded = numpy.logical_and(brainmaskEroded, numpy.logical_not(cerebellumCSFMask))
+	brainmaskEroded = numpy.logical_and(brainmaskEroded, numpy.logical_not(opticChiasmMask))
+	brainmaskEroded = numpy.logical_and(brainmaskEroded, numpy.logical_not(hippocampusAmygdalaMask))
+
+# initialise the defect image as those defects that are not in the WM surfaces
+
+	defectIMG[numpy.logical_or(inWMSurfs, numpy.logical_not(brainmaskEroded))] = 0
+
+	brainmaskErodedMGH = nibabel.MGHImage(numpy.uint8(brainmaskEroded), brainmaskMGZ.get_affine())
+	nibabel.save(brainmaskErodedMGH, os.path.join(subjMRIDir, 'brainmask.eroded.mgz'))
+	
+	wmMasked = numpy.array(wmIMG)
+	wmMasked[numpy.logical_not(brainmaskEroded)] = 1
+
+	wmDilated = scipy.ndimage.morphology.binary_dilation(wmIMG > 5, structure = numpy.ones((3, 1, 1)))
+	wmDilated = scipy.ndimage.morphology.binary_dilation(wmDilated, structure = numpy.ones((1, 3, 1)))
+	wmDilated = scipy.ndimage.morphology.binary_dilation(wmDilated, structure = numpy.ones((1, 1, 3)))
+	
+	wmMasked[numpy.logical_not(wmDilated)] = 1
+	
+	brainmaskErodedMGH = nibabel.MGHImage(numpy.uint8(wmMasked), brainmaskMGZ.get_affine())
+	nibabel.save(brainmaskErodedMGH, os.path.join(subjMRIDir, 'wm.mgz'))
+
+#T1Masked = numpy.array(T1IMG)
+#T1Masked[numpy.logical_not(brainmaskEroded)] = 0
+#brainmaskErodedMGH = nibabel.MGHImage(numpy.uint8(brainmaskEroded), brainmaskMGZ.get_affine())
+#nibabel.save(brainmaskErodedMGH, os.path.join(subjMRIDir, 'brainmask.mgz'))
+
+	defectMGH = nibabel.MGHImage(defectIMG, brainmaskMGZ.get_affine())
+	nibabel.save(defectMGH, os.path.join(subjMRIDir, 'surface.defects.process.mgz'))
+
+	defectIMG = scipy.ndimage.measurements.label(numpy.uint16(defectIMG > 0), structure = numpy.ones([3, 3, 3]))[0]
+
+	defectIMG = numpy.int16(defectIMG)
+	defectSkelIMG = numpy.zeros_like(defectIMG)
+
+# get all of the 
+	uniqueLabels = numpy.unique(defectIMG[defectIMG > 0])
+
+	T = T1MGZ.get_affine()
+
+	newDefectIMG = numpy.zeros_like(defectIMG)
+	
+	labelBoundingBoxes = scipy.ndimage.find_objects(defectIMG)
+	#print L
+	for curLabel in range(1, uniqueLabels.size + 1):
+		#print curLabel
+		#I = numpy.where(defectIMG == curLabel)
+		
+		#IRanges = (
+		#numpy.arange(numpy.min(I[0]), numpy.max(I[0]) + 1),
+		#numpy.arange(numpy.min(I[1]), numpy.max(I[1]) + 1),
+		#numpy.arange(numpy.min(I[2]), numpy.max(I[2]) + 1))
+		#print IRanges	
+		#print labelBoundingBoxes[curLabel]
+		#print labelBoundingBoxes[curLabel - 1][0].start
+		#print labelBoundingBoxes[curLabel - 1][0].stop
+		IRanges = (
+		numpy.arange(labelBoundingBoxes[curLabel - 1][0].start, labelBoundingBoxes[curLabel - 1][0].stop),
+		numpy.arange(labelBoundingBoxes[curLabel - 1][1].start, labelBoundingBoxes[curLabel - 1][1].stop),
+		numpy.arange(labelBoundingBoxes[curLabel - 1][2].start, labelBoundingBoxes[curLabel - 1][2].stop))
+		#print curLabel
+		#print IRanges
+		#quit()
+		#curLabelIMG = numpy.pad(defectIMG.take(IRanges[0], axis = 0).take(IRanges[1], axis = 1).take(IRanges[2], axis = 2), 1, mode = 'constant', constant_values = 0)
+		curLabelIMG = numpy.pad(defectIMG[labelBoundingBoxes[curLabel - 1]], 1, mode = 'constant', constant_values = 0)
+		#print numpy.array_equal(curLabelIMG, curLabelIMG2)
+		#quit()
+		#curLabelIMG = numpy.pad(defectIMG[IRanges[0][0]:IRanges[0][-1] + 1, IRanges[1][0]:IRanges[1][-1] + 1, IRanges[0][2]:IRanges[2][-1] + 1], mode = 'constant', constant_values = 0)
+		
+		#curT1IMG = numpy.pad(T1IMG.take(IRanges[0], axis = 0).take(IRanges[1], axis = 1).take(IRanges[2], axis = 2), 1, mode = 'constant', constant_values = 0)
+		
+		curLabelIMG = curLabelIMG > 0
+		curLabelIMG = scipy.ndimage.morphology.binary_closing(curLabelIMG, structure = numpy.ones((3, 3, 3)))
+		#curLabelIMG = scipy.ndimage.morphology.binary_closing(curLabelIMG)
+		curLabelIMG = curLabelIMG[1:-1, 1:-1, 1:-1]
+
+		# set voxels via indices that are set rather than using a subarray
+		D = numpy.where(curLabelIMG)
+		D = (D[0] + IRanges[0][0], D[1] + IRanges[1][0], D[2] + IRanges[2][0])
+		#defectIMG[IRanges[0][0]:IRanges[0][-1] + 1, IRanges[1][0]:IRanges[1][-1] + 1, IRanges[2][0]:IRanges[2][-1] + 1] = numpy.array(curLabelIMG * curLabel)
+		newDefectIMG[D] = curLabel
+		
+		curSkelIMG = numpy.zeros(newDefectIMG.shape, dtype = defectSkelIMG.dtype)
+		curLabelIMGMask = curLabelIMG > 0
+		curSkelIMG = list()
+		for z in numpy.arange(curLabelIMGMask.shape[2]):
+			curSkelIMG.append(skimage.morphology.skeletonize(curLabelIMGMask[:, :, z]))
+		curSkelIMG = numpy.stack(curSkelIMG, axis = 2)
+		D = numpy.where(curSkelIMG)
+		D = (D[0] + IRanges[0][0], D[1] + IRanges[1][0], D[2] + IRanges[2][0])
+		#defectIMG[IRanges[0][0]:IRanges[0][-1] + 1, IRanges[1][0]:IRanges[1][-1] + 1, IRanges[2][0]:IRanges[2][-1] + 1] = numpy.array(curLabelIMG * curLabel)
+		defectSkelIMG[D] = 1
+
+	defectSkelIMG = numpy.logical_and(defectSkelIMG > 0, wmMGZ.get_data() > 5)
+
+	mkdirSafe(os.path.join(subjDir, 'tmp'))
+	writeControlPoints(os.path.join(subjDir, 'tmp', 'control.orig.dat'), defectSkelIMG, T1MGZ)
+
+	defectSkelIMG = numpy.logical_and(defectSkelIMG, ASEGMask)
+	defectSkelIMG = numpy.logical_and(defectSkelIMG, WMDilated)
+
+	print str(numpy.sum(defectSkelIMG)) + " control points generated"
+	writeControlPoints(os.path.join(subjDir, 'tmp', 'control.dat'), defectSkelIMG, T1MGZ)
+
+# remove control points outside the WM label in aseg.presurf
+#defectSkelIMG = numpy.logical_and(defectSkelIMG > 0, numpy.logical_or(ASEGIMG == 2, ASEGIMG == 41))
+#writeControlPoints(os.path.join(subjDir, 'tmp', 'control.nowm.dat'), defectSkelIMG, T1MGZ)
+#filesToConvertNIItoMGZ = ["brainmask.eroded"]
+
+	defectMGH = nibabel.MGHImage(newDefectIMG, brainmaskMGZ.get_affine())
+	nibabel.save(defectMGH, os.path.join(subjMRIDir, 'surface.defects.closed.mgz'))
+
+	defectMGH = nibabel.MGHImage(numpy.int16(ASEGMask), brainmaskMGZ.get_affine())
+	nibabel.save(defectMGH, os.path.join(subjMRIDir, 'aseg.mask.mgz'))
+#defectMGH = nibabel.MGHImage(numpy.int16(DefectIMG), brainmaskMGZ.get_affine())
+#nibabel.save(defectMGH, os.path.join(subjMRIDir, 'surface.defects.closed.wm.mgz'))
+
+#defectMGH = nibabel.MGHImage(defectTopHatIMG, brainmaskMGZ.get_affine())
+#nibabel.save(defectMGH, os.path.join(subjMRIDir, 'surface.defects.tophat.mgz'))
+
+	defectMGH = nibabel.MGHImage(numpy.uint8(defectSkelIMG * 255), brainmaskMGZ.get_affine())
+	nibabel.save(defectMGH, os.path.join(subjMRIDir, 'surface.defects.skel.mgz'))
+
+	defectMGH = nibabel.MGHImage(numpy.uint8(WMDilated * 255), brainmaskMGZ.get_affine())
+	nibabel.save(defectMGH, os.path.join(subjMRIDir, 'aseg.wm.dilated.mgz'))
+#defectMGH = nibabel.MGHImage(numpy.float32(defectDistIMG), brainmaskMGZ.get_affine())
+#nibabel.save(defectMGH, os.path.join(subjMRIDir, 'surface.defects.dist.mgz'))
+
+
+#newWMIMG = wmMGZ.get_data()
+#newWMIMG[numpy.logical_not(brainmaskEroded)] = 1
+
+#brainmaskErodedMGH = nibabel.MGHImage(newWMIMG, brainmaskMGZ.get_affine())
+#nibabel.save(brainmaskErodedMGH, os.path.join(subjMRIDir, 'wm.mgz'))
+
+if __name__ == "__main__":
+	main()

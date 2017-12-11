@@ -1,0 +1,76 @@
+#!/usr/bin/env python
+
+import nibabel
+import scipy
+import scipy.ndimage
+import numpy
+
+import pylab
+
+import os
+import sys
+
+import subprocess
+import shutil
+import skimage.morphology
+
+# writes control point file using a mask, transform, and file name
+def writeControlPoints(fileName, maskIMG, RASTransform):
+	I = numpy.where(maskIMG)
+
+
+def radialStrel(R):
+	X, Y, Z = numpy.meshgrid(numpy.arange(-R, R + 1), numpy.arange(-R, R + 1), numpy.arange(-R, R + 1))
+	S = numpy.sqrt(X * X + Y * Y + Z * Z) 
+	return (S <= R)
+
+
+if len(sys.argv) != 2:
+	print "Performs defect-based control point insertion, usage:"
+	print
+	print sys.argv[0] + " <subject id>"
+	quit()
+
+subjectID = sys.argv[1]
+
+try:
+	subjDir = os.path.join(os.environ['SUBJECTS_DIR'], subjectID)
+except Exception:
+	print "SUBJECTS_DIR not set"
+	quit()
+
+if not os.path.isdir(subjDir):
+	print "Subject directory not found"
+	quit()
+
+subjMRIDir = os.path.join(subjDir, 'mri')
+
+# load in the NIIs
+T1MGZ = nibabel.load(os.path.join(subjMRIDir, 'T1.mgz'))
+T1IMG = T1MGZ.get_data()
+wmMGZ = nibabel.load(os.path.join(subjMRIDir, 'wm.mgz'))
+wmSegMGZ = nibabel.load(os.path.join(subjMRIDir, 'wm.preautoedit.mgz'))
+brainMGZ = nibabel.load(os.path.join(subjMRIDir, 'brain.mgz'))
+
+brainIMG = brainMGZ.get_data()
+wmIMG = wmMGZ.get_data()
+wmSegIMG = wmSegMGZ.get_data()
+
+shutil.copy(os.path.join(subjMRIDir, 'wm.mgz'), os.path.join(subjMRIDir, 'wm.before.preprocess.mgz'))
+
+#T = numpy.int16(brainMGZ.get_data()) - numpy.int16(normMGZ.get_data())
+#T[wmMGZ.get_data() < 5] = 0
+
+#outMGH = nibabel.MGHImage(T, brainMGZ.get_affine())
+#nibabel.save(outMGH, os.path.join(subjMRIDir, 'brain.minus.norm.mgz'))
+
+meanSegWM = numpy.mean(brainIMG[wmSegIMG > 5])
+stdSegWM = numpy.abs(numpy.std(brainIMG[wmSegIMG > 5]))
+
+newWMIMG = numpy.array(wmIMG)
+newWMIMG[numpy.logical_and(wmIMG < 5, numpy.logical_and(wmSegIMG > 5, brainIMG > meanSegWM + (stdSegWM / 2.0)))] = 255
+#newWMIMG[numpy.logical_and(wmIMG < 5, numpy.logical_and(wmSegIMG > 5, T1IMG >= 110))] = 255
+
+outMGH = nibabel.MGHImage(newWMIMG, brainMGZ.get_affine())
+nibabel.save(outMGH, os.path.join(subjMRIDir, 'wm.mgz'))
+

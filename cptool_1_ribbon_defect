@@ -1,0 +1,13 @@
+#!/bin/bash
+
+SUBJID=$1
+
+if [ ! -d "$SUBJECTS_DIR/$SUBJID" ]
+then
+	echo "Subject not found"
+	exit
+fi
+
+defect-seg --s $SUBJID
+cd $SUBJECTS_DIR/$SUBJID/mri
+mris_volmask --aseg_name aseg.presurf --surf_white white.preaparc --label_left_white 2 --label_left_ribbon 3 --label_right_white 41 --label_right_ribbon 42 --save_ribbon $SUBJID
