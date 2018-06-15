@@ -24,8 +24,8 @@ After creating the Freesurfer directories for a subject *foo*, use the following
 1. `recon-all -autorecon1 -autorecon2 -s foo`
 1. `cptool_1_ribbon_defect foo`
 1. `cptool_2_cps foo`
-1. `recon-all -normalization2 -segmentation -s foo`
-1. `cptool_3_wm foo`
+1. `cptool_3_aftercps foo`
+1. `cptool_4_wm foo`
 1. `recon-all -autorecon2-wm -autorecon3 -s foo`
 
 ## CHECKING OUTPUTS
