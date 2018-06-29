@@ -1,0 +1,3 @@
+#!/bin/bash
+
+recon-all -normalization2 -segmentation -s $1

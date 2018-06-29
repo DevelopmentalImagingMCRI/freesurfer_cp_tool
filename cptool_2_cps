@@ -79,7 +79,7 @@ def main():
 	brainmaskIMG = brainmaskMGZ.get_data()
 	defectsMGZ = nibabel.load(os.path.join(subjMRIDir, 'surface.defects.mgz'))
 	defectsIMG = defectsMGZ.get_data()
-	ribbonMGZ = nibabel.load(os.path.join(subjMRIDir, 'ribbon.mgz'))
+	ribbonMGZ = nibabel.load(os.path.join(subjMRIDir, 'beforecp.mgz'))
 	ribbonIMG = ribbonMGZ.get_data()
 	if not os.path.isfile(os.path.join(subjMRIDir, 'wm.preautoedit.mgz')):
 		shutil.copyfile(os.path.join(subjMRIDir, 'wm.mgz'), os.path.join(subjMRIDir, 'wm.preautoedit.mgz'))
